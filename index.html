@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#111">
+<title>טיימר פסיכומטרי</title>
+<style>
+  :root { --bg:#111; --fg:#eee; --mut:#888; --acc:#4ea1ff; --warn:#ffb020; }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
+         min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:24px 16px env(safe-area-inset-bottom); }
+  h1 { font-size:18px; font-weight:600; color:var(--mut); margin:0 0 24px; }
+  #section { font-size:34px; font-weight:700; }
+  #clock { font-size:min(28vw,150px); font-variant-numeric:tabular-nums; font-weight:700; line-height:1.1; margin:4px 0; direction:ltr; }
+  #clock.warn { color:var(--warn); }
+  #sub { color:var(--mut); font-size:16px; min-height:1.3em; }
+  .bar { width:min(520px,100%); height:8px; background:#2a2a2a; border-radius:4px; overflow:hidden; margin:22px 0 6px; }
+  .bar > div { height:100%; width:0; background:var(--acc); }
+  #total { color:var(--mut); font-size:14px; }
+  .controls { display:flex; gap:10px; margin:26px 0 10px; flex-wrap:wrap; justify-content:center; }
+  button, select { font:inherit; font-size:18px; border:0; border-radius:12px; padding:14px 26px; cursor:pointer; }
+  #go { background:var(--acc); color:#000; font-weight:700; min-width:160px; }
+  #go:disabled { opacity:.5; cursor:wait; }
+  .sec { background:#262626; color:var(--fg); }
+  select { background:#262626; color:var(--fg); padding:10px 14px; font-size:16px; }
+  #from { color:var(--mut); font-size:15px; display:flex; gap:8px; align-items:center; }
+  ol { width:min(520px,100%); padding:0; list-style:none; margin:26px 0; }
+  li { display:flex; justify-content:space-between; padding:10px 14px; border-radius:10px; color:var(--mut); }
+  li.now { background:#1d2b3d; color:var(--fg); font-weight:600; }
+  li.done { text-decoration:line-through; opacity:.5; }
+  #note { color:var(--mut); font-size:13px; max-width:520px; text-align:center; line-height:1.5; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<h1>טיימר פסיכומטרי</h1>
+<div id="section">מוכן</div>
+<div id="clock">--:--</div>
+<div id="sub">טוען הקלטה…</div>
+<div class="bar"><div id="prog"></div></div>
+<div id="total"></div>
+
+<div class="controls">
+  <button id="go" disabled>טוען…</button>
+  <button id="reset" class="sec" hidden>איפוס</button>
+</div>
+<label id="from">התחל מ־ <select id="startAt"></select></label>
+
+<ol id="list"></ol>
+
+<p id="note">
+  אחרי שלוחצים "התחל" אפשר לנעול את האייפון. ההודעות ימשיכו להישמע כי זו הקלטה אחת רציפה, כמו מוזיקה.
+  כדאי לבדוק שהווליום פתוח ושלא מנגן משהו אחר במקביל.
+  <br><a href="audio/exam.mp3" download>הורדת ההקלטה כ־MP3</a>
+</p>
+
+<audio id="audio" preload="auto"></audio>
+
+<script>
+const $ = id => document.getElementById(id);
+const audio = $('audio');
+let sections = [], total = 0, ready = false;
+
+function fmt(s) {
+  s = Math.max(0, Math.ceil(s));
+  const m = Math.floor(s / 60), r = s % 60;
+  return m + ':' + String(r).padStart(2, '0');
+}
+
+async function init() {
+  const sched = await (await fetch('schedule.json')).json();
+  let t = 0;
+  sections = sched.sections.map(s => { const o = { name: s.name, start: t, end: t + s.minutes * 60 }; t = o.end; return o; });
+  total = t;
+  $('list').innerHTML = sections.map((s, i) =>
+    `<li id="li${i}"><span>${s.name}</span><span>${s.end / 60 - s.start / 60} דק'</span></li>`).join('');
+  $('startAt').innerHTML = sections.map((s, i) => `<option value="${s.start}">${s.name}</option>`).join('');
+  $('total').textContent = 'סה"כ ' + fmt(total);
+
+  // Download the whole recording first, so nothing depends on the network mid-exam.
+  try {
+    const res = await fetch('audio/exam.mp3');
+    const len = +res.headers.get('content-length') || 0;
+    const reader = res.body.getReader(); const chunks = []; let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      chunks.push(value); got += value.length;
+      if (len) $('sub').textContent = `טוען הקלטה… ${Math.round(got / len * 100)}%`;
+    }
+    audio.src = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
+  } catch (e) {
+    audio.src = 'audio/exam.mp3';
+  }
+  ready = true;
+  $('go').disabled = false; $('go').textContent = 'התחל';
+  $('sub').textContent = 'לחץ "התחל" כשאתה מוכן';
+}
+
+function render() {
+  const started = audio.currentTime > 0 || !audio.paused;
+  if (!started) return;
+  const t = audio.currentTime;
+  const i = sections.findIndex(s => t < s.end);
+  sections.forEach((s, k) => {
+    const li = $('li' + k);
+    li.className = k === i ? 'now' : (i === -1 || k < i ? 'done' : '');
+  });
+  $('prog').style.width = Math.min(100, t / total * 100) + '%';
+  $('total').textContent = `עבר ${fmt(t)} מתוך ${fmt(total)}`;
+  if (i === -1) {
+    $('section').textContent = 'הבחינה הסתיימה';
+    $('clock').textContent = '0:00'; $('clock').className = '';
+    $('sub').textContent = '';
+    return;
+  }
+  const left = sections[i].end - t;
+  $('section').textContent = sections[i].name;
+  $('clock').textContent = fmt(left);
+  $('clock').className = left <= 300 ? 'warn' : '';
+  $('sub').textContent = audio.paused ? 'מושהה' : (i + 1 < sections.length ? `הבא: ${sections[i + 1].name}` : 'פרק אחרון');
+}
+
+$('go').onclick = async () => {
+  if (!ready) return;
+  if (audio.paused) {
+    if (audio.currentTime === 0) audio.currentTime = +$('startAt').value;
+    try { await audio.play(); } catch (e) { alert('לא הצלחתי להפעיל שמע: ' + e.message); return; }
+    $('go').textContent = 'השהה'; $('reset').hidden = false; $('from').hidden = true;
+  } else {
+    audio.pause(); $('go').textContent = 'המשך';
+  }
+  render();
+};
+$('reset').onclick = () => {
+  if (!confirm('לאפס את הטיימר?')) return;
+  audio.pause(); audio.currentTime = 0;
+  $('go').textContent = 'התחל'; $('reset').hidden = true; $('from').hidden = false;
+  $('section').textContent = 'מוכן'; $('clock').textContent = '--:--'; $('clock').className = '';
+  $('sub').textContent = 'לחץ "התחל" כשאתה מוכן'; $('prog').style.width = '0';
+  $('total').textContent = 'סה"כ ' + fmt(total);
+  sections.forEach((s, k) => $('li' + k).className = '');
+};
+audio.onended = render;
+audio.onpause = () => { if (!audio.ended && audio.currentTime > 0) $('go').textContent = 'המשך'; render(); };
+audio.onplay = () => { $('go').textContent = 'השהה'; render(); };
+
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.metadata = new MediaMetadata({ title: 'בחינה פסיכומטרית', artist: 'טיימר' });
+}
+setInterval(render, 250);
+document.addEventListener('visibilitychange', render);
+init();
+</script>
+</body>
+</html>
